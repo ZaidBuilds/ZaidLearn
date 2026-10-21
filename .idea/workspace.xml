@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="f948bedb-14ab-4b27-8c0e-4abbb71f1751" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/html projects/class.html/project1.html" afterDir="false" />
-    </list>
+    <list default="true" id="f948bedb-14ab-4b27-8c0e-4abbb71f1751" name="Changes" comment="commit all these" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -21,7 +19,14 @@
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="ROOT_SYNC" value="SYNC" />
   </component>
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/ZaidBuilds/ZaidLearn.git",
+    "accountId": "6ed832ea-8e74-4b07-a2e8-966d407168e5"
+  }
+}]]></component>
   <component name="ProjectColorInfo"><![CDATA[{
   "associatedIndex": 4,
   "fromUser": false
@@ -66,8 +71,17 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1792568885999</updated>
-      <workItem from="1792568887418" duration="984000" />
+      <workItem from="1792568887418" duration="1374000" />
     </task>
+    <task id="LOCAL-00001" summary="commit all these">
+      <option name="closed" value="true" />
+      <created>1792570031657</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1792570031658</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -83,6 +97,10 @@
         </entry>
       </map>
     </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="commit all these" />
+    <option name="LAST_COMMIT_MESSAGE" value="commit all these" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/04_Learning$q7.coverage" NAME="q7 Coverage Results" MODIFIED="1792569290095" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/DSA" />
