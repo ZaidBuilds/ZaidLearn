@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Python packaging & builds
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing & Linting caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Compiled C / C++ binaries and object files
+*.exe
+*.out
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# VS Code & Code Runner temp files
+tempCodeRunnerFile*
+.vscode/
+
+# JetBrains IDE
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
