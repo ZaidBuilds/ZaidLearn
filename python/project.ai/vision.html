@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Terminator Vision</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        
+        /* The Video Feed (Hidden, we draw it to canvas) */
+        #webcam { display: none; }
+
+        /* The HUD Layer */
+        #hud-canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 2;
+        }
+
+        /* Scan Line Effect */
+        .scanline {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 5px;
+            background: rgba(255, 0, 0, 0.3);
+            opacity: 0.6;
+            animation: scan 3s linear infinite;
+            pointer-events: none;
+            z-index: 5;
+            box-shadow: 0 0 10px rgba(255, 0, 0, 0.8);
+        }
+
+        @keyframes scan {
+            0% { top: 0%; }
+            100% { top: 100%; }
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 20px; left: 20px;
+            color: #ff3333;
+            z-index: 10;
+            text-shadow: 0 0 5px #ff0000;
+            pointer-events: none;
+        }
+
+        h1 { margin: 0; letter-spacing: 4px; font-size: 24px; text-transform: uppercase; border-bottom: 2px solid #ff3333; display: inline-block; }
+        p { font-size: 14px; margin-top: 5px; opacity: 0.8; }
+        .blinking { animation: blink 1s infinite; }
+
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
+
+        #loading {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff3333;
+            font-size: 20px;
+            text-align: center;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>SKYNET_OS <span class="blinking">v2.4</span></h1>
+        <p>SYSTEM STATUS: <span id="status">INITIALIZING NEURAL NET...</span></p>
+        <p>OBJECTS DETECTED: <span id="object-count">0</span></p>
+        <p>CPU LOAD: <span id="cpu-load">0%</span></p>
+    </div>
+
+    <div id="loading">
+        <p>[ LOADING COCO-SSD MODEL ]</p>
+        <p>Please Wait...</p>
+    </div>
+
+    <div class="scanline"></div>
+
+    <video id="webcam" playsinline muted></video>
+    <canvas id="hud-canvas"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+
+    <script>
+        // --- CONFIGURATION ---
+        const CONFIDENCE_THRESHOLD = 0.6; // Only show objects with >60% confidence
+        const SPEAK_COOLDOWN = 3000; // Don't repeat same object name for 3 seconds
+
+        // --- STATE ---
+        let model = null;
+        let video = document.getElementById('webcam');
+        let canvas = document.getElementById('hud-canvas');
+        let ctx = canvas.getContext('2d');
+        let lastSpokenTime = {}; // Memory of what we said
+        let isModelLoaded = false;
+
+        // --- INITIALIZATION ---
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: 640, height: 480 },
+                audio: false
+            });
+            video.srcObject = stream;
+            
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve(video);
+                };
+            });
+        }
+
+        async function main() {
+            // 1. Setup Camera
+            await setupCamera();
+            resizeCanvas();
+            
+            // 2. Load AI Model
+            document.getElementById('status').innerText = "DOWNLOADING NEURAL WEIGHTS...";
+            // coco-ssd is a pre-trained model that detects 80 classes of objects
+            model = await cocoSsd.load();
+            
+            isModelLoaded = true;
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('status').innerText = "ONLINE // SCANNING";
+            
+            // 3. Start Loop
+            detectFrame();
+        }
+
+        // --- THE AI LOOP ---
+        function detectFrame() {
+            // Predict objects in the video frame
+            model.detect(video).then(predictions => {
+                renderPredictions(predictions);
+                requestAnimationFrame(detectFrame);
+            });
+        }
+
+        function renderPredictions(predictions) {
+            // Clear Canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw Video Feed (Darkened for Sci-Fi effect)
+            ctx.save();
+            ctx.filter = 'grayscale(100%) contrast(120%) brightness(60%) sepia(100%) hue-rotate(-50deg) saturate(300%)'; // Red tint
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // Fake Grid Overlay
+            drawGrid();
+
+            // Update UI
+            document.getElementById('object-count').innerText = predictions.length;
+            document.getElementById('cpu-load').innerText = Math.floor(Math.random() * 30 + 10) + "%";
+
+            // Process Each Detected Object
+            predictions.forEach(prediction => {
+                if (prediction.score < CONFIDENCE_THRESHOLD) return;
+
+                const [x, y, width, height] = prediction.bbox;
+                const label = prediction.class.toUpperCase();
+                const score = Math.round(prediction.score * 100);
+
+                // Scale coordinates to canvas size
+                const scaleX = canvas.width / video.videoWidth;
+                const scaleY = canvas.height / video.videoHeight;
+
+                const sx = x * scaleX;
+                const sy = y * scaleY;
+                const sWidth = width * scaleX;
+                const sHeight = height * scaleY;
+
+                // 1. Draw "Terminator" Bracket Box
+                drawBracket(sx, sy, sWidth, sHeight);
+
+                // 2. Draw Label
+                ctx.fillStyle = '#ff3333';
+                ctx.font = 'bold 16px Courier New';
+                ctx.fillText(`${label} [${score}%]`, sx + 10, sy - 10);
+                
+                // 3. Draw "Tracking Line" to center
+                ctx.beginPath();
+                ctx.moveTo(canvas.width / 2, canvas.height / 2); // Center of screen
+                ctx.lineTo(sx + sWidth/2, sy + sHeight/2); // Center of object
+                ctx.strokeStyle = 'rgba(255, 50, 50, 0.3)';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                // 4. Speak Object (Audio)
+                speak(label);
+            });
+        }
+
+        // --- VISUAL UTILS ---
+        function drawBracket(x, y, w, h) {
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 3;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ff0000';
+
+            const lineLen = 20;
+
+            ctx.beginPath();
+            // Top Left
+            ctx.moveTo(x, y + lineLen); ctx.lineTo(x, y); ctx.lineTo(x + lineLen, y);
+            // Top Right
+            ctx.moveTo(x + w - lineLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + lineLen);
+            // Bottom Right
+            ctx.moveTo(x + w, y + h - lineLen); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - lineLen, y + h);
+            // Bottom Left
+            ctx.moveTo(x + lineLen, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - lineLen);
+            
+            ctx.stroke();
+            ctx.shadowBlur = 0; // Reset
+        }
+
+        function drawGrid() {
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.1)';
+            ctx.lineWidth = 1;
+            
+            // Vertical lines
+            for (let i = 0; i < canvas.width; i += 100) {
+                ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, canvas.height); ctx.stroke();
+            }
+            // Horizontal lines
+            for (let i = 0; i < canvas.height; i += 100) {
+                ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke();
+            }
+        }
+
+        // --- AUDIO UTILS ---
+        function speak(text) {
+            const now = Date.now();
+            // Only speak if we haven't said this word recently
+            if (!lastSpokenTime[text] || now - lastSpokenTime[text] > SPEAK_COOLDOWN) {
+                
+                // Use the browser's native Speech Synthesis
+                const utterance = new SpeechSynthesisUtterance(`Target confirmed. ${text}.`);
+                utterance.rate = 1.2;
+                utterance.pitch = 0.8; // Lower pitch for "robot" voice
+                // utterance.voice = ... (could select specific voices here)
+                
+                window.speechSynthesis.speak(utterance);
+                
+                lastSpokenTime[text] = now;
+            }
+        }
+
+        // --- RESIZE HANDLING ---
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        // --- START ---
+        main();
+
+    </script>
+</body>
+</html>

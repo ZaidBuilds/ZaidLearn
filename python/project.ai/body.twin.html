@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Digital Twin: Full Body MoCap</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: monospace; }
+        
+        #video-container {
+            position: absolute; bottom: 20px; left: 20px;
+            width: 200px; height: 150px;
+            border: 2px solid #00ffcc; border-radius: 8px;
+            overflow: hidden; opacity: 0.5; transform: scaleX(-1);
+            z-index: 10;
+        }
+
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: #00ffcc;
+            pointer-events: none; z-index: 10;
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 10px #00ffcc; }
+        .instruction { color: #aaa; font-size: 0.9rem; margin-top: 5px; }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00ffcc; font-size: 1.5rem; animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 0% { opacity: 0.5; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Digital Twin v1.0</h1>
+        <p class="instruction">STAND BACK TO CAPTURE FULL BODY</p>
+        <p>FPS: <span id="fps">0</span></p>
+    </div>
+
+    <div id="loading">INITIALIZING NEURAL NET...</div>
+
+    <div id="video-container">
+        <video id="input_video" playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <script>
+        // --- 1. THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050505);
+        scene.fog = new THREE.Fog(0x050505, 10, 50);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1, 5); // Eye level-ish
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Controls (Mouse Rotation)
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.target.set(0, 1, 0);
+
+        // Environment
+        const grid = new THREE.GridHelper(20, 20, 0x222222, 0x111111);
+        scene.add(grid);
+
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(0, 10, 5);
+        light.castShadow = true;
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x404040));
+
+        // --- 2. THE SKELETON RIG ---
+        // MediaPipe Pose has 33 landmarks. We will map them to 3D spheres.
+        const LANDMARK_COUNT = 33;
+        const joints = [];
+        const bones = [];
+
+        // Joint Material (Glowing Nodes)
+        const jointGeo = new THREE.SphereGeometry(0.05, 16, 16);
+        const jointMat = new THREE.MeshStandardMaterial({ 
+            color: 0x00ffcc, emissive: 0x00ffcc, emissiveIntensity: 0.5, roughness: 0.1 
+        });
+
+        // Bone Material (Connecting Lines)
+        const boneMat = new THREE.MeshBasicMaterial({ 
+            color: 0x0088ff, transparent: true, opacity: 0.6, wireframe: true 
+        });
+
+        // Create 33 Joints
+        for(let i=0; i<LANDMARK_COUNT; i++) {
+            const mesh = new THREE.Mesh(jointGeo, jointMat);
+            mesh.castShadow = true;
+            scene.add(mesh);
+            joints.push(mesh);
+        }
+
+        // Define Connections (Indices from MediaPipe Pose)
+        // See: https://google.github.io/mediapipe/solutions/pose.html#pose-landmark-model-blaze-pose-ghum-3d
+        const connections = [
+            [11, 12], // Shoulders
+            [11, 13], [13, 15], // Left Arm
+            [12, 14], [14, 16], // Right Arm
+            [11, 23], [12, 24], // Torso
+            [23, 24], // Hips
+            [23, 25], [25, 27], [27, 29], [29, 31], // Left Leg
+            [24, 26], [26, 28], [28, 30], [30, 32]  // Right Leg
+        ];
+
+        // Create Bones based on connections
+        connections.forEach(pair => {
+            // We use a Cylinder that we will stretch and rotate
+            const geo = new THREE.CylinderGeometry(0.02, 0.02, 1, 8);
+            geo.translate(0, 0.5, 0); // Pivot at bottom
+            const mesh = new THREE.Mesh(geo, boneMat);
+            scene.add(mesh);
+            bones.push({ mesh, indices: pair });
+        });
+
+        // --- 3. MEDIAPIPE LOGIC ---
+        function onResults(results) {
+            document.getElementById('loading').style.display = 'none';
+
+            if (!results.poseLandmarks) return;
+
+            const lm = results.poseWorldLandmarks; // Use 'WorldLandmarks' for metric 3D coordinates (meters)
+
+            // Update Joints
+            if (lm) {
+                for(let i=0; i<LANDMARK_COUNT; i++) {
+                    const landmark = lm[i];
+                    // MediaPipe coords: -X is Right, +Y is Down, -Z is Forward
+                    // ThreeJS coords: +X is Right, +Y is Up, +Z is Backward
+                    // We need to flip/swizzle to match
+                    
+                    if (landmark.visibility > 0.5) {
+                        joints[i].visible = true;
+                        joints[i].position.set(-landmark.x, -landmark.y + 1.5, -landmark.z); 
+                        // +1.5 to lift skeleton up from floor roughly
+                    } else {
+                        joints[i].visible = false;
+                    }
+                }
+
+                // Update Bones
+                bones.forEach(bone => {
+                    const idxA = bone.indices[0];
+                    const idxB = bone.indices[1];
+                    const jointA = joints[idxA];
+                    const jointB = joints[idxB];
+
+                    if (jointA.visible && jointB.visible) {
+                        bone.mesh.visible = true;
+                        
+                        // Position at Joint A
+                        bone.mesh.position.copy(jointA.position);
+                        
+                        // Look at Joint B
+                        bone.mesh.lookAt(jointB.position);
+                        
+                        // Scale length to match distance
+                        const dist = jointA.position.distanceTo(jointB.position);
+                        bone.mesh.scale.set(1, 1, dist); // Scale Z (since cylinder points up, we need to rotate geom or use scale Y? Wait cylinder default is Y)
+                        
+                        // Correction: Cylinder default axis is Y. LookAt aligns Z. 
+                        // Let's re-do the math for cylinder alignment simply:
+                        bone.mesh.scale.set(1, dist, 1);
+                        bone.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), jointB.position.clone().sub(jointA.position).normalize());
+                    } else {
+                        bone.mesh.visible = false;
+                    }
+                });
+            }
+        }
+
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+        
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        pose.onResults(onResults);
+
+        const videoElement = document.getElementById('input_video');
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        // --- 4. RENDER LOOP ---
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            
+            // Pulse effect on joints
+            const time = clock.getElapsedTime();
+            joints.forEach((j, i) => {
+                const s = 1 + Math.sin(time * 5 + i) * 0.2;
+                j.scale.set(s, s, s);
+            });
+
+            document.getElementById('fps').innerText = Math.round(1 / clock.getDelta());
+            renderer.render(scene, camera);
+        }
+        
+        // Resize Handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Holographic Window</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        
+        #video-container {
+            position: absolute; bottom: 10px; left: 10px;
+            width: 120px; height: 90px;
+            border: 1px solid #444; opacity: 0.3;
+            transform: scaleX(-1); z-index: 100;
+        }
+
+        #ui {
+            position: absolute; top: 50%; left: 50%; 
+            transform: translate(-50%, -50%);
+            color: #fff; font-family: monospace; text-align: center;
+            pointer-events: none; mix-blend-mode: exclusion;
+        }
+        
+        h1 { font-size: 4rem; margin: 0; letter-spacing: 10px; opacity: 0.8; }
+        p { color: #888; letter-spacing: 2px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1 id="title">DEPTH</h1>
+        <p>MOVE YOUR HEAD</p>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <script>
+        // --- 1. THREE.JS SCENE ---
+        const scene = new THREE.Scene();
+        // Fog to hide the edges of the infinite tunnel
+        scene.fog = new THREE.FogExp2(0x000000, 0.03);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.z = 5;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- 2. THE OBJECTS (The "Tesseract") ---
+        
+        // Inner Cube
+        const geometry = new THREE.BoxGeometry(2, 2, 2);
+        const material = new THREE.MeshBasicMaterial({ 
+            color: 0x00ffcc, wireframe: true, transparent: true, opacity: 0.5 
+        });
+        const cube = new THREE.Mesh(geometry, material);
+        scene.add(cube);
+
+        // Outer Cage
+        const cageGeo = new THREE.IcosahedronGeometry(3, 1);
+        const cageMat = new THREE.MeshBasicMaterial({ 
+            color: 0xff0055, wireframe: true, transparent: true, opacity: 0.3 
+        });
+        const cage = new THREE.Mesh(cageGeo, cageMat);
+        scene.add(cage);
+
+        // The "Tunnel" to give depth reference
+        const tunnelGroup = new THREE.Group();
+        for(let i=0; i<20; i++) {
+            const ringGeo = new THREE.RingGeometry(0.5 + i*0.5, 0.6 + i*0.5, 32);
+            const ringMat = new THREE.MeshBasicMaterial({ 
+                color: 0x444444, side: THREE.DoubleSide, transparent: true, opacity: 0.1 
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.z = -i * 2;
+            tunnelGroup.add(ring);
+        }
+        scene.add(tunnelGroup);
+
+        // Floating Particles
+        const partGeo = new THREE.BufferGeometry();
+        const partCount = 1000;
+        const partPos = new Float32Array(partCount * 3);
+        for(let i=0; i<partCount*3; i++) {
+            partPos[i] = (Math.random() - 0.5) * 20;
+        }
+        partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
+        const partMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.05 });
+        const stars = new THREE.Points(partGeo, partMat);
+        scene.add(stars);
+
+        // --- 3. PARALLAX LOGIC ---
+        let headX = 0;
+        let headY = 0;
+        let targetX = 0;
+        let targetY = 0;
+
+        // --- 4. ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smooth Interpolation
+            headX += (targetX - headX) * 0.1;
+            headY += (targetY - headY) * 0.1;
+
+            // Move Camera based on Head Position (The Hologram Effect)
+            // If head moves Left (negative X), Camera moves Left.
+            // This creates the pivot effect around the object.
+            camera.position.x = headX * 10; 
+            camera.position.y = headY * 10;
+            camera.lookAt(0, 0, 0); // Always look at the Tesseract
+
+            // Rotate Objects
+            cube.rotation.x += 0.01;
+            cube.rotation.y += 0.01;
+            cage.rotation.x -= 0.005;
+            cage.rotation.y -= 0.005;
+
+            // Parallax UI
+            const ui = document.getElementById('title');
+            ui.style.transform = `translateX(${-headX * 50}px) translateY(${-headY * 50}px)`;
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 5. HEAD TRACKING (FaceMesh) ---
+        const videoElement = document.getElementById('input_video');
+
+        function onResults(results) {
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const face = results.multiFaceLandmarks[0];
+                
+                // Landmark 1 is the nose tip
+                const nose = face[1];
+
+                // Normalize coordinates (0-1) to centered (-0.5 to 0.5)
+                // Invert X because webcam is mirrored
+                const x = (0.5 - nose.x); 
+                const y = (0.5 - nose.y);
+
+                targetX = x;
+                targetY = y;
+            }
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+        
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        faceMesh.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await faceMesh.send({image: videoElement}); },
+            width: 320, height: 240
+        });
+        cameraUtils.start();
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>

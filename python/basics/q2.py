@@ -1,0 +1,1 @@
+print("value of x after swaping is",x)

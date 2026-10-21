@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Reality Distortion Field</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: #fff;
+            font-family: 'Courier New', monospace; pointer-events: none;
+            text-shadow: 0 0 5px #000;
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 2px; }
+        p { margin-top: 5px; color: #ccc; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Gravity Well</h1>
+        <p>Status: <span id="status">Active</span></p>
+    </div>
+
+    <video id="video" playsinline style="display:none"></video>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <script>
+        // --- 1. SHADER CODE (GLSL) ---
+        // This runs on the Graphics Card for every single pixel on screen.
+        
+        const vertexShader = `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `;
+
+        const fragmentShader = `
+            uniform sampler2D tDiffuse; // The Webcam Feed
+            uniform vec2 uPoint;        // The Hand Position (0 to 1)
+            uniform float uTime;        // Time for pulsing
+            uniform float uStrength;    // How strong the gravity is
+            varying vec2 vUv;
+
+            void main() {
+                vec2 p = vUv;
+                
+                // Calculate vector from pixel to hand
+                vec2 dir = p - uPoint;
+                float dist = length(dir);
+
+                // --- THE BLACK HOLE MATH ---
+                // We warp the coordinate 'p' based on distance
+                
+                // 1. Pinch Effect (Pull pixels in)
+                float force = uStrength / (dist * dist + 0.1);
+                
+                // 2. Event Horizon (Black center)
+                float horizon = smoothstep(0.0, 0.05, dist);
+                
+                // 3. Chromatic Aberration (Split RGB channels)
+                // We sample Red, Green, and Blue at slightly different offsets
+                vec2 offset = normalize(dir) * force * 0.02;
+                
+                float r = texture2D(tDiffuse, p - offset).r;
+                float g = texture2D(tDiffuse, p).g;
+                float b = texture2D(tDiffuse, p + offset).b;
+
+                // 4. Combine
+                vec3 color = vec3(r, g, b);
+                
+                // Darken the center
+                color *= horizon;
+
+                // Add "Accretion Disk" glow
+                float glow = (1.0 - smoothstep(0.0, 0.2, dist)) * 0.5;
+                color += vec3(glow * 0.5, glow * 0.2, glow * 1.0); // Purple glow
+
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        // --- 2. THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Video Texture
+        const video = document.getElementById('video');
+        const texture = new THREE.VideoTexture(video);
+        texture.minFilter = THREE.LinearFilter;
+
+        // The Screen Plane
+        const geometry = new THREE.PlaneGeometry(2, 2);
+        const uniforms = {
+            tDiffuse: { value: texture },
+            uPoint: { value: new THREE.Vector2(0.5, 0.5) },
+            uTime: { value: 0 },
+            uStrength: { value: 0.0 }
+        };
+
+        const material = new THREE.ShaderMaterial({
+            uniforms: uniforms,
+            vertexShader: vertexShader,
+            fragmentShader: fragmentShader
+        });
+
+        const quad = new THREE.Mesh(geometry, material);
+        scene.add(quad);
+
+        // --- 3. ANIMATION LOOP ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            uniforms.uTime.value = clock.getElapsedTime();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 4. HAND TRACKING ---
+        let handVisible = false;
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                
+                // Use Palm Center (approximate using middle finger base)
+                const point = hand[9]; 
+
+                // Smoothly update shader uniform
+                // Note: Webcam texture is mirrored, so we flip X
+                const targetX = 1.0 - point.x;
+                const targetY = 1.0 - point.y; // UVs go 0-1 bottom-to-top usually, but video texture might vary. 
+                // Correction: In Three.js UV, (0,0) is bottom-left. MediaPipe (0,0) is top-left.
+                
+                uniforms.uPoint.value.x += (targetX - uniforms.uPoint.value.x) * 0.1;
+                uniforms.uPoint.value.y += ((1.0 - point.y) - uniforms.uPoint.value.y) * 0.1;
+
+                // Ramp up gravity strength
+                uniforms.uStrength.value += (0.15 - uniforms.uStrength.value) * 0.1;
+                handVisible = true;
+                document.getElementById('status').innerText = "SINGULARITY DETECTED";
+            } else {
+                // Ramp down if no hand
+                uniforms.uStrength.value += (0.0 - uniforms.uStrength.value) * 0.1;
+                handVisible = false;
+                document.getElementById('status').innerText = "STABLE";
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(video, {
+            onFrame: async () => { await hands.send({image: video}); },
+            width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        // Resize
+        window.addEventListener('resize', () => {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>

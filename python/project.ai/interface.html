@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Minority Report UI</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        
+        #video-container {
+            position: absolute; bottom: 20px; left: 20px;
+            width: 160px; height: 120px;
+            border: 2px solid #555; border-radius: 8px;
+            overflow: hidden; opacity: 0.4; transform: scaleX(-1);
+            z-index: 0;
+        }
+
+        #ui {
+            position: absolute; top: 30px; left: 30px; color: #fff; pointer-events: none; z-index: 10;
+        }
+        h1 { margin: 0; font-weight: 200; letter-spacing: 2px; }
+        .status { font-size: 0.8rem; color: #aaa; margin-top: 5px; text-transform: uppercase; }
+        .active { color: #00ffcc; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>SPATIAL UI v1</h1>
+        <div class="status">Mode: <span id="mode-text">IDLE</span></div>
+        <div class="status">Target: <span id="target-text">NONE</span></div>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script>
+        // --- 1. SETUP SCENE ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050505);
+        scene.fog = new THREE.Fog(0x050505, 20, 60);
+
+        const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 25;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // --- 2. GENERATE CONTENT (Floating Images) ---
+        const images = [];
+        const galleryGroup = new THREE.Group();
+        scene.add(galleryGroup);
+
+        // Placeholder texture generator
+        function createTexture(text, color) {
+            const cvs = document.createElement('canvas');
+            cvs.width = 256; cvs.height = 256;
+            const cx = cvs.getContext('2d');
+            cx.fillStyle = color;
+            cx.fillRect(0,0,256,256);
+            cx.fillStyle = 'rgba(255,255,255,0.1)';
+            cx.fillRect(10,10,236,236);
+            cx.fillStyle = '#fff';
+            cx.font = 'bold 40px Arial';
+            cx.textAlign = 'center';
+            cx.textBaseline = 'middle';
+            cx.fillText(text, 128, 128);
+            const tex = new THREE.CanvasTexture(cvs);
+            return tex;
+        }
+
+        // Layout grid of cards
+        const colors = ['#d32f2f', '#7b1fa2', '#303f9f', '#0288d1', '#00796b', '#689f38', '#fbc02d', '#e64a19'];
+        let idx = 0;
+        
+        for(let x = -2; x <= 2; x++) {
+            for(let y = -1; y <= 1; y++) {
+                const geo = new THREE.PlaneGeometry(8, 5); // 16:9 Aspect
+                const mat = new THREE.MeshBasicMaterial({ 
+                    map: createTexture(`FILE_${idx}`, colors[idx % colors.length]),
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 0.8
+                });
+                const mesh = new THREE.Mesh(geo, mat);
+                
+                // Position in semi-circle
+                const angle = x * 0.3; 
+                const radius = 25;
+                mesh.position.set(Math.sin(angle) * radius, y * 7, Math.cos(angle) * radius - 20);
+                mesh.rotation.y = angle; // Face center
+                
+                mesh.userData = { 
+                    id: idx, 
+                    basePos: mesh.position.clone(),
+                    baseRot: mesh.rotation.clone(),
+                    isHovered: false,
+                    isGrabbed: false
+                };
+
+                // Add Selection Border
+                const borderGeo = new THREE.EdgesGeometry(geo);
+                const borderMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+                const border = new THREE.LineSegments(borderGeo, borderMat);
+                mesh.add(border);
+                mesh.userData.border = border;
+
+                galleryGroup.add(mesh);
+                images.push(mesh);
+                idx++;
+            }
+        }
+
+        // --- 3. CURSOR & INTERACTION SYSTEM ---
+        const cursorGeo = new THREE.RingGeometry(0.5, 0.6, 32);
+        const cursorMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+        const cursor = new THREE.Mesh(cursorGeo, cursorMat);
+        scene.add(cursor);
+
+        // State Machine
+        let handPos = new THREE.Vector3(0,0,0);
+        let isPinching = false;
+        let grabbedObject = null;
+        let grabOffset = new THREE.Vector3();
+        let scrollVelocity = 0;
+
+        // --- 4. INPUT LOOP ---
+        function updateLogic() {
+            // Update Cursor Visuals
+            cursor.position.lerp(handPos, 0.2);
+            cursor.position.z = 15; // Floating plane in front of content
+
+            // 1. PINCH DETECTION (Grab)
+            if (isPinching) {
+                cursor.material.color.setHex(0x00ffcc);
+                cursor.scale.set(0.5, 0.5, 0.5);
+
+                if (!grabbedObject) {
+                    // Try to grab something
+                    // Raycast logic simplified: Distance check
+                    let closest = null;
+                    let minDst = 5; // Grab threshold
+
+                    images.forEach(img => {
+                        // Project cursor to image depth for fair comparison
+                        const dist = cursor.position.distanceTo(img.position);
+                        if (dist < minDst) {
+                            closest = img;
+                            minDst = dist;
+                        }
+                    });
+
+                    if (closest) {
+                        grabbedObject = closest;
+                        grabOffset.copy(closest.position).sub(cursor.position);
+                        
+                        // Visual feedback
+                        grabbedObject.material.opacity = 1.0;
+                        grabbedObject.scale.set(1.1, 1.1, 1.1);
+                        
+                        document.getElementById('mode-text').innerText = "GRAGGING";
+                        document.getElementById('mode-text').className = "active";
+                        document.getElementById('target-text').innerText = `FILE_${grabbedObject.userData.id}`;
+                    } else {
+                        // Dragging Empty Space = Scroll
+                        document.getElementById('mode-text').innerText = "SCROLLING";
+                    }
+                }
+            } else {
+                // RELEASE
+                cursor.material.color.setHex(0xffffff);
+                cursor.scale.set(1, 1, 1);
+                
+                if (grabbedObject) {
+                    // Release object
+                    grabbedObject.material.opacity = 0.8;
+                    grabbedObject.scale.set(1, 1, 1);
+                    grabbedObject = null;
+                }
+                document.getElementById('mode-text').innerText = "HOVER";
+                document.getElementById('mode-text').className = "";
+                document.getElementById('target-text').innerText = "NONE";
+            }
+
+            // 2. MOVEMENT LOGIC
+            if (grabbedObject) {
+                // Move object with hand
+                const target = cursor.position.clone().add(grabOffset);
+                grabbedObject.position.lerp(target, 0.2);
+                // Tilt object slightly based on movement
+                grabbedObject.rotation.z = (grabbedObject.position.x - target.x) * 0.1;
+            } else if (isPinching) {
+                // Scroll World
+                // Calculate delta X of hand relative to center
+                const dx = handPos.x * 0.05;
+                galleryGroup.rotation.y += dx * 0.1;
+            }
+
+            // 3. HOVER EFFECTS
+            images.forEach(img => {
+                if (img !== grabbedObject) {
+                    // Return to base position (elasticity)
+                    // img.position.lerp(img.userData.basePos, 0.05); // Uncomment to make them snap back
+                    img.userData.border.material.opacity = 0;
+                    
+                    const dist = cursor.position.distanceTo(img.position);
+                    if (dist < 4) {
+                        img.userData.border.material.opacity = 1;
+                        img.position.z += (img.userData.basePos.z + 2 - img.position.z) * 0.1; // Pop out
+                    } else {
+                         img.position.z += (img.userData.basePos.z - img.position.z) * 0.1; // Return
+                    }
+                }
+            });
+        }
+
+        // --- 5. RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            updateLogic();
+            TWEEN.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 6. MEDIAPIPE HANDS ---
+        const videoElement = document.getElementById('input_video');
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const lm = results.multiHandLandmarks[0];
+                const index = lm[8];
+                const thumb = lm[4];
+
+                // 1. Map Coordinates
+                const x = (0.5 - index.x) * 40; // Wide range
+                const y = (0.5 - index.y) * 25;
+                handPos.set(x, y, 0);
+
+                // 2. Detect Pinch
+                const pinchDist = Math.hypot(index.x - thumb.x, index.y - thumb.y);
+                isPinching = pinchDist < 0.05;
+
+            } else {
+                isPinching = false;
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 320, height: 240
+        });
+        cameraUtils.start();
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>

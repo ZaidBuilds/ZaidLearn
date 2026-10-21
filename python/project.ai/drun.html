@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Invisible Drum Kit</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #video-container {
+            position: absolute;
+            bottom: 20px; left: 20px;
+            width: 200px; height: 150px;
+            border: 2px solid #00ffcc;
+            border-radius: 10px;
+            overflow: hidden; opacity: 0.6;
+            transform: scaleX(-1);
+            z-index: 5;
+        }
+        #ui {
+            position: absolute; top: 20px; left: 0; width: 100%;
+            text-align: center; pointer-events: none; z-index: 10;
+        }
+        h1 { margin: 0; color: #fff; text-transform: uppercase; letter-spacing: 5px; text-shadow: 0 0 10px #00ffcc; }
+        p { color: #aaa; margin-top: 5px; font-size: 0.9rem; }
+        #start-btn {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            padding: 15px 30px; background: #00ffcc; border: none; color: #000;
+            font-size: 1.2rem; font-weight: bold; cursor: pointer; border-radius: 5px;
+            z-index: 20; box-shadow: 0 0 20px #00ffcc;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Sonic Hands</h1>
+        <p>Strike the glowing pads to play</p>
+    </div>
+
+    <button id="start-btn">CLICK TO START AUDIO</button>
+
+    <div id="video-container">
+        <video id="input_video" autoplay playsinline style="width:100%; height:100%; object-fit:cover;"></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script>
+        // --- AUDIO ENGINE (WEB AUDIO API) ---
+        // We synthesize sounds mathematically to avoid loading external MP3s
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        let audioCtx;
+
+        const synth = {
+            kick: (time) => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                
+                osc.frequency.setValueAtTime(150, time);
+                osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+                
+                gain.gain.setValueAtTime(1, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+                
+                osc.start(time);
+                osc.stop(time + 0.5);
+            },
+            snare: (time) => {
+                // Noise buffer for "snap"
+                const bufferSize = audioCtx.sampleRate * 0.2; // 0.2 seconds
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+                
+                const noise = audioCtx.createBufferSource();
+                noise.buffer = buffer;
+                const noiseFilter = audioCtx.createBiquadFilter();
+                noiseFilter.type = 'highpass';
+                noiseFilter.frequency.value = 1000;
+                const noiseGain = audioCtx.createGain();
+                
+                noise.connect(noiseFilter);
+                noiseFilter.connect(noiseGain);
+                noiseGain.connect(audioCtx.destination);
+                
+                noiseGain.gain.setValueAtTime(1, time);
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+                noise.start(time);
+
+                // Oscillator for "body"
+                const osc = audioCtx.createOscillator();
+                osc.type = 'triangle';
+                const oscGain = audioCtx.createGain();
+                osc.connect(oscGain);
+                oscGain.connect(audioCtx.destination);
+                osc.frequency.setValueAtTime(250, time);
+                oscGain.gain.setValueAtTime(0.5, time);
+                oscGain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                osc.start(time);
+                osc.stop(time + 0.1);
+            },
+            hihat: (time) => {
+                // High frequency noise ratio
+                const bufferSize = audioCtx.sampleRate * 0.1;
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    // Simulating metallic noise
+                    data[i] = (Math.random() * 2 - 1); 
+                }
+
+                const noise = audioCtx.createBufferSource();
+                noise.buffer = buffer;
+                
+                const bandpass = audioCtx.createBiquadFilter();
+                bandpass.type = 'bandpass';
+                bandpass.frequency.value = 10000;
+
+                const highpass = audioCtx.createBiquadFilter();
+                highpass.type = 'highpass';
+                highpass.frequency.value = 7000;
+
+                const gain = audioCtx.createGain();
+                
+                noise.connect(bandpass);
+                bandpass.connect(highpass);
+                highpass.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                gain.gain.setValueAtTime(0.6, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+                
+                noise.start(time);
+            }
+        };
+
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x111111, 0.05);
+        
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 10;
+        camera.position.y = 2;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const light = new THREE.PointLight(0xffffff, 1, 100);
+        light.position.set(0, 5, 5);
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x404040));
+
+        // --- CREATE DRUM PADS ---
+        const padGeometry = new THREE.BoxGeometry(2.5, 2.5, 0.5);
+        const pads = [];
+
+        function createPad(x, y, color, name, soundFunc) {
+            const material = new THREE.MeshPhongMaterial({ 
+                color: color, 
+                transparent: true, 
+                opacity: 0.5,
+                shininess: 100,
+                emissive: color,
+                emissiveIntensity: 0.2
+            });
+            const pad = new THREE.Mesh(padGeometry, material);
+            pad.position.set(x, y, 0);
+            scene.add(pad);
+
+            // Wireframe glow
+            const edges = new THREE.EdgesGeometry(padGeometry);
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xffffff }));
+            pad.add(line);
+
+            pads.push({ 
+                mesh: pad, 
+                name: name, 
+                color: color,
+                sound: soundFunc,
+                isHit: false,
+                cooldown: 0
+            });
+        }
+
+        // Layout: Kick (Left/Red), Snare (Center/Blue), Hi-Hat (Right/Green)
+        createPad(-4, 0, 0xff0055, 'KICK', synth.kick);
+        createPad(0, 1, 0x00aaff, 'SNARE', synth.snare);
+        createPad(4, 0, 0x00ff88, 'HIHAT', synth.hihat);
+
+        // --- HAND CURSOR ---
+        const cursorGeo = new THREE.SphereGeometry(0.3, 16, 16);
+        const cursorMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+        const cursor = new THREE.Mesh(cursorGeo, cursorMat);
+        scene.add(cursor);
+
+        // --- HAND TRACKING LOGIC ---
+        const videoElement = document.getElementById('input_video');
+        let handX = 0, handY = 0;
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const indexTip = landmarks[8]; // Index Finger Tip
+
+                // Map video coordinates (0-1) to 3D world coordinates
+                // We scale by 16 width and 10 height to match camera FOV roughly
+                const targetX = (0.5 - indexTip.x) * 16;
+                const targetY = (0.5 - indexTip.y) * 10 + 2; // Offset up slightly
+
+                // Smooth movement (Lerp)
+                handX += (targetX - handX) * 0.5;
+                handY += (targetY - handY) * 0.5;
+
+                cursor.position.set(handX, handY, 0);
+                cursor.visible = true;
+
+                checkCollisions();
+
+            } else {
+                cursor.visible = false;
+            }
+        }
+
+        function checkCollisions() {
+            if (!audioCtx) return;
+
+            pads.forEach(pad => {
+                // Simple AABB Collision (Box intersection)
+                // Check if cursor is roughly inside the pad's bounds
+                const dx = Math.abs(cursor.position.x - pad.mesh.position.x);
+                const dy = Math.abs(cursor.position.y - pad.mesh.position.y);
+
+                const hitThreshold = 1.4; // Half of pad size roughly
+
+                if (dx < hitThreshold && dy < hitThreshold) {
+                    if (!pad.isHit && Date.now() > pad.cooldown) {
+                        // TRIGGER HIT!
+                        pad.sound(audioCtx.currentTime);
+                        pad.isHit = true;
+                        pad.cooldown = Date.now() + 150; // 150ms debounce
+                        
+                        // Visual Feedback
+                        pad.mesh.material.opacity = 0.9;
+                        pad.mesh.material.emissiveIntensity = 1.0;
+                        pad.mesh.scale.set(1.1, 1.1, 1.1);
+                    }
+                } else {
+                    // Reset
+                    pad.isHit = false;
+                    pad.mesh.material.opacity = 0.5;
+                    pad.mesh.material.emissiveIntensity = 0.2;
+                    pad.}

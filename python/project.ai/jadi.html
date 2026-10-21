@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Jedi Physics Room</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: sans-serif; }
+        #video-container {
+            position: absolute;
+            bottom: 20px; left: 20px;
+            width: 160px; height: 120px;
+            border: 2px solid #ff0055;
+            border-radius: 8px;
+            overflow: hidden; opacity: 0.8;
+            transform: scaleX(-1);
+        }
+        #ui {
+            position: absolute; top: 20px; left: 20px;
+            color: #fff; pointer-events: none;
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 2px; color: #ff0055; }
+        p { font-size: 0.9rem; color: #ccc; }
+        .hud { font-weight: bold; color: #00ffcc; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Physics Room</h1>
+        <p>FPS: <span id="fps" class="hud">0</span> | Objects: <span class="hud">50</span></p>
+        <p>State: <span id="state" class="hud">Physical Hand</span></p>
+        <br>
+        <p>🖐 <strong>Move:</strong> Slap & Push Cubes</p>
+        <p>✊ <strong>Fist:</strong> Anti-Gravity Lift</p>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" autoplay playsinline style="width:100%; height:100%; object-fit:cover;"></video>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js"
+            }
+        }
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import * as CANNON from 'cannon-es';
+
+        // --- 1. SETUP THREE.JS (VISUALS) ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+        
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 5, 12);
+        camera.lookAt(0, 2, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- 2. SETUP CANNON.JS (PHYSICS) ---
+        const world = new CANNON.World();
+        world.gravity.set(0, -9.82, 0);
+        
+        // Physics Materials
+        const groundMat = new CANNON.Material();
+        const boxMat = new CANNON.Material();
+        const handMat = new CANNON.Material();
+
+        const boxGroundContact = new CANNON.ContactMaterial(groundMat, boxMat, { friction: 0.0, restitution: 0.5 });
+        const handBoxContact = new CANNON.ContactMaterial(handMat, boxMat, { friction: 0.1, restitution: 0.8 }); // Bouncy hands
+        world.addContactMaterial(boxGroundContact);
+        world.addContactMaterial(handBoxContact);
+
+        // Arrays to sync Physics <-> Visuals
+        const meshes = [];
+        const bodies = [];
+
+        // --- 3. CREATE OBJECTS ---
+        
+        // Floor
+        const groundBody = new CANNON.Body({
+            mass: 0, // Static
+            shape: new CANNON.Plane(),
+            material: groundMat
+        });
+        groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+        world.addBody(groundBody);
+
+        const grid = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+        scene.add(grid);
+
+        // The "Hand" (Kinematic Body - we move it manually, physics respects it)
+        const handShape = new CANNON.Sphere(0.8); // 0.8 radius 'force field'
+        const handBody = new CANNON.Body({
+            mass: 0, // Kinematic (infinite mass effectively)
+            type: CANNON.Body.KINEMATIC,
+            material: handMat,
+            shape: handShape
+        });
+        handBody.position.set(0, -10, 0); // Start hidden
+        world.addBody(handBody);
+
+        // Visual Hand
+        const handMesh = new THREE.Mesh(
+            new THREE.IcosahedronGeometry(0.8, 1),
+            new THREE.MeshStandardMaterial({ color: 0xff0055, wireframe: true, emissive: 0x550022 })
+        );
+        scene.add(handMesh);
+
+        // Spawn Cubes
+        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+        
+        function spawnBox() {
+            const x = (Math.random() - 0.5) * 6;
+            const y = 5 + Math.random() * 10;
+            const z = (Math.random() - 0.5) * 6;
+
+            // Physics Body
+            const body = new CANNON.Body({
+                mass: 1, // Dynamic
+                shape: new CANNON.Box(new CANNON.Vec3(0.5, 0.5, 0.5)),
+                material: boxMat
+            });
+            body.position.set(x, y, z);
+            world.addBody(body);
+            bodies.push(body);
+
+            // Visual Mesh
+            const mat = new THREE.MeshStandardMaterial({ 
+                color: Math.random() * 0xffffff,
+                roughness: 0.4,
+                metalness: 0.1
+            });
+            const mesh = new THREE.Mesh(boxGeo, mat);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            meshes.push(mesh);
+        }
+
+        for(let i=0; i<50; i++) spawnBox();
+
+        // --- 4. HAND TRACKING LOGIC ---
+        let targetX = 0, targetY = 0;
+        let isFist = false;
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+
+                // Map 2D (0-1) to 3D World (roughly -8 to 8)
+                // Inverting X because webcam is mirrored
+                const x = (0.5 - landmarks[9].x) * 16; 
+                const y = (1.0 - landmarks[9].y) * 10; 
+                
+                targetX = x;
+                targetY = y;
+
+                // Detect Fist (Wrist to fingertips check)
+                const wrist = landmarks[0];
+                const tip = landmarks[12]; // Middle finger tip
+                const dist = Math.sqrt(Math.pow(wrist.x - tip.x, 2) + Math.pow(wrist.y - tip.y, 2));
+                
+                if (dist < 0.15) {
+                    if (!isFist) {
+                        isFist = true;
+                        document.getElementById('state').innerText = "⚡ ANTI-GRAVITY ⚡";
+                        document.getElementById('state').style.color = "#ffff00";
+                        handMesh.material.emissive.setHex(0xffff00);
+                        handMesh.material.color.setHex(0xffff00);
+                    }
+                } else {
+                    if (isFist) {
+                        isFist = false;
+                        document.getElementById('state').innerText = "Physical Hand";
+                        document.getElementById('state').style.color = "#00ffcc";
+                        handMesh.material.emissive.setHex(0x550022);
+                        handMesh.material.color.setHex(0xff0055);
+                    }
+                }
+            } else {
+                // Hide hand if not seen
+                targetY = -10;
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        const videoElement = document.getElementById('input_video');
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 320, height: 240
+        });
+        cameraUtils.start();
+
+        // --- 5. ANIMATION LOOP ---
+        const clock = new THREE.Clock();
+        const timeStep = 1 / 60;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const dt = clock.getDelta();
+
+            // 1. Move Hand Body (Smooth Lerp)
+            handBody.position.x += (targetX - handBody.position.x) * 0.2;
+            handBody.position.y += (targetY - handBody.position.y) * 0.2;
+            handBody.position.z = 0; // Keep hand in the middle plane
+
+            // Sync Visual Hand
+            handMesh.position.copy(handBody.position);
+            handMesh.rotation.x += 0.02;
+            handMesh.rotation.y += 0.02;
+
+            // 2. Apply Jedi Physics (Fist)
+            if (isFist) {
+                // Reverse gravity or float up
+                world.gravity.set(0, 4, 0); 
+                // Add dampening so they don't fly away too fast
+                bodies.forEach(b => {
+                    b.velocity.x *= 0.98;
+                    b.velocity.y *= 0.98;
+                    b.velocity.z *= 0.98;
+                });
+            } else {
+                world.gravity.set(0, -9.82, 0);
+            }
+
+            // 3. Step Physics World
+            world.step(timeStep);
+
+            // 4. Sync Visuals to Physics
+            for (let i = 0; i < meshes.length; i++) {
+                meshes[i].position.copy(bodies[i].position);
+                meshes[i].quaternion.copy(bodies[i].quaternion);
+
+                // Reset if fell off world
+                if (bodies[i].position.y < -10) {
+                    bodies[i].position.set((Math.random()-0.5)*6, 15, (Math.random()-0.5)*6);
+                    bodies[i].velocity.set(0,0,0);
+                }
+            }
+
+            // UI
+            document.getElementById('fps').innerText = Math.round(1/dt);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

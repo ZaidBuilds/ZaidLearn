@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Neon Graffiti</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; }
+        
+        #video-container {
+            position: absolute; bottom: 20px; left: 20px;
+            width: 160px; height: 120px;
+            border: 2px solid #333; border-radius: 10px;
+            overflow: hidden; opacity: 0.5; transform: scaleX(-1);
+            z-index: 10;
+        }
+
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: #fff;
+            pointer-events: none; z-index: 10; mix-blend-mode: difference;
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 4px; font-weight: 300; }
+        p { font-size: 0.9rem; color: #aaa; margin-top: 5px; }
+
+        .controls {
+            margin-top: 20px;
+        }
+        .key {
+            display: inline-block; padding: 5px 10px; border: 1px solid #fff;
+            border-radius: 4px; font-size: 0.8rem; margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Vapor Canvas</h1>
+        <p>Raise your hand to paint.</p>
+        <div class="controls">
+            <span class="key">Space</span> Clear Canvas
+        </div>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+
+    <script>
+        // --- 1. CONFIGURATION ---
+        const PARTICLE_COUNT = 3000; // Total drops of paint available
+        const BRUSH_FLOW = 5; // How many particles spawn per frame
+        const LIFE_SPAN = 250; // How long paint lasts
+        
+        // --- 2. THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        
+        // Orthographic camera for 2D drawing feel, but in 3D space
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 50;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }); // preserveDrawingBuffer allows trails if we wanted
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.autoClearColor = false; // Important for accumulation effects
+        document.body.appendChild(renderer.domElement);
+
+        // --- 3. THE PAINT SYSTEM ---
+        const particles = [];
+        const simplex = new SimplexNoise();
+
+        // Create the particle pool
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(PARTICLE_COUNT * 3);
+        const colors = new Float32Array(PARTICLE_COUNT * 3);
+        const sizes = new Float32Array(PARTICLE_COUNT);
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+        // Soft, smoky texture
+        const texture = new THREE.TextureLoader().load('https://threejs.org/examples/textures/sprites/snowflake2.png');
+        
+        const material = new THREE.PointsMaterial({
+            size: 2.0,
+            vertexColors: true,
+            map: texture,
+            blending: THREE.AdditiveBlending, // Makes overlapping colors glow
+            depthTest: false,
+            transparent: true,
+            opacity: 0.6
+        });
+
+        const particleSystem = new THREE.Points(geometry, material);
+        scene.add(particleSystem);
+
+        // Particle Class
+        class PaintDrop {
+            constructor(index) {
+                this.index = index;
+                this.active = false;
+                this.life = 0;
+                
+                // Physics properties
+                this.x = 0; this.y = 0; this.z = 0;
+                this.vx = 0; this.vy = 0; this.vz = 0;
+            }
+
+            spawn(x, y, hue) {
+                this.active = true;
+                this.life = LIFE_SPAN;
+                this.x = x; this.y = y; this.z = 0;
+                
+                // Initial random spread (spray can nozzle effect)
+                this.vx = (Math.random() - 0.5) * 0.5;
+                this.vy = (Math.random() - 0.5) * 0.5;
+                this.vz = (Math.random() - 0.5) * 0.5;
+
+                // Set Color (Rainbow HSL to RGB)
+                const color = new THREE.Color();
+                color.setHSL(hue, 1.0, 0.6); // High saturation, medium lightness
+                
+                colors[this.index * 3] = color.r;
+                colors[this.index * 3 + 1] = color.g;
+                colors[this.index * 3 + 2] = color.b;
+            }
+
+            update(time) {
+                if (!this.active) return;
+
+                this.life--;
+                
+                // --- FLUID PHYSICS (CURL NOISE) ---
+                // We sample noise at the particle's position to get a "wind direction"
+                // This creates the swirling smoke effect without heavy fluid simulation.
+                const scale = 0.05; // How large the swirls are
+                const noiseX = simplex.noise3D(this.x * scale, this.y * scale, time * 0.2);
+                const noiseY = simplex.noise3D(this.y * scale, this.z * scale, time * 0.2 + 100);
+                
+                // Add noise to velocity
+                this.vx += noiseX * 0.02;
+                this.vy += noiseY * 0.02;
+
+                // Drag (Air resistance)
+                this.vx *= 0.96;
+                this.vy *= 0.96;
+                this.vz *= 0.96;
+
+                // Move
+                this.x += this.vx;
+                this.y += this.vy;
+                this.z += this.vz;
+
+                // Update Arrays
+                positions[this.index * 3] = this.x;
+                positions[this.index * 3 + 1] = this.y;
+                positions[this.index * 3 + 2] = this.z;
+
+                // Size fade out
+                // Grows initially, then shrinks
+                const progress = 1 - (this.life / LIFE_SPAN);
+                let size = 1.0;
+                if (progress < 0.2) size = progress * 5; // Fade in
+                else size = (1 - progress) * 8; // Fade out large
+                
+                sizes[this.index] = size;
+
+                if (this.life <= 0) {
+                    this.reset();
+                }
+            }
+
+            reset() {
+                this.active = false;
+                // Move off screen
+                positions[this.index * 3] = 9999;
+                sizes[this.index] = 0;
+            }
+        }
+
+        // Init Paint Drops
+        const drops = [];
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            drops.push(new PaintDrop(i));
+            drops[i].reset();
+        }
+
+        // --- 4. INPUT HANDLING ---
+        let handX = 0, handY = 0;
+        let isDrawing = false;
+        let hueCycle = 0;
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const lm = results.multiHandLandmarks[0];
+                const tip = lm[8]; // Index tip
+
+                // Map 0-1 to Scene Coordinates (-40 to 40 approx)
+                // We invert X because camera is mirrored
+                const targetX = (0.5 - tip.x) * 80;
+                const targetY = (0.5 - tip.y) * 50;
+
+                // Smooth hand
+                handX += (targetX - handX) * 0.3;
+                handY += (targetY - handY) * 0.3;
+                isDrawing = true;
+
+            } else {
+                isDrawing = false;
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(onResults);
+
+        const videoElement = document.getElementById('input_video');
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 320, height: 240
+        });
+        cameraUtils.start();
+
+        // Keyboard Controls
+        window.addEventListener('keydown', (e) => {
+            if(e.code === 'Space') {
+                drops.forEach(d => d.reset()); // Clear Canvas
+            }
+        });
+
+        // --- 5. LOOP ---
+        const clock = new THREE.Clock();
+        let nextDropIndex = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const time = clock.getElapsedTime();
+            
+            // 1. Spawn New Paint
+            if (isDrawing) {
+                // Spawn multiple drops per frame for density
+                for(let i=0; i<BRUSH_FLOW; i++) {
+                    const drop = drops[nextDropIndex];
+                    drop.spawn(handX, handY, hueCycle);
+                    
+                    nextDropIndex = (nextDropIndex + 1) % PARTICLE_COUNT;
+                }
+                
+                // Rotate Color
+                hueCycle += 0.005;
+                if(hueCycle > 1) hueCycle = 0;
+            }
+
+            // 2. Update Physics
+            drops.forEach(d => d.update(time));
+
+            // 3. Notify Three.js that data changed
+            geometry.attributes.position.needsUpdate = true;
+            geometry.attributes.color.needsUpdate = true;
+            geometry.attributes.size.needsUpdate = true;
+
+            renderer.render(scene, camera);
+        }
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+
+    </script>
+</body>
+</html>
